@@ -1,0 +1,96 @@
+#!/bin/bash
+
+#Deploying ngxin
+#author by djshi2
+
+ip=$1
+
+vip=$2
+ips=$3
+ips2=${ips//\//\;}
+server=${ips2//,/ }
+
+
+#安装nginx
+
+nginx_install(){
+rpm -ivh http://nginx.org/packages/centos/7/noarch/RPMS/nginx-release-centos-7-0.el7.ngx.noarch.rpm
+yum install -y nginx
+! rpm -qa|grep nginx > /dev/null && echo "ERROR: Failed to install nginx on $ip" && exit1
+systemctl start nginx && systemctl enable nginx
+mkdir -p /data/nginx/
+chown iflytek:iflytek -R /data/nginx
+}
+
+
+#配置nginx
+
+nginx_config(){
+cp /etc/nginx/nginx.conf /etc/nginx/nginx.conf.bak
+
+cat > /etc/nginx/nginx.conf << EOF
+
+#user  nginx;
+worker_processes  auto;
+
+error_log  /data/nginx/error.log warn;
+pid        /var/run/nginx.pid;
+
+
+events {
+    worker_connections  65535;
+}
+
+
+http {
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+
+    log_format  main  '\$remote_addr - \$remote_user [\$time_local] "\$request" '
+                      '\$status \$body_bytes_sent "\$http_referer" '
+                      '"\$http_user_agent" "\$http_x_forwarded_for"';
+
+    access_log  /data/nginx/access.log  main;
+
+    sendfile        on;
+    #tcp_nopush     on;
+
+    keepalive_timeout  65;
+
+    #gzip  on;
+
+    include /etc/nginx/conf.d/*.conf;
+}
+EOF
+
+cat > /etc/nginx/conf.d/service.conf << EOF
+
+upstream webserver {
+`echo $server | xargs -n5`
+}
+server {
+listen        80;
+server_name $vip;
+location / {
+proxy_pass http://webserver;
+}
+}
+EOF
+
+nginx -t && nginx -s reload && echo "IFON: Nginx installation configuration successfully on $ip" 
+
+}
+
+finish(){
+cat << EOF
++---------------------------------------+
+|         Nginx installation            |
+|      configuration completed          |
++---------------------------------------+
+EOF
+}
+
+
+nginx_install
+nginx_config
+finish

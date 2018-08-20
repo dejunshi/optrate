@@ -1,0 +1,148 @@
+#!/bin/bash
+
+#Deploying keepalived
+#author by djshi2
+
+ip=$1
+network=`ip a | grep $ip | awk '{print $NF}'`
+
+master_ip=$2
+vip=$3
+
+
+
+#安装keealived
+
+keepalived_install(){
+yum install keepalived -y
+! rpm -qa|grep keepalived > /dev/null && echo "ERROR: Failed to install keepalived on $ip" && exit1
+}
+
+
+#配置keepalived.conf
+keepalived_config(){
+
+cp /etc/keepalived/keepalived.conf /etc/keepalived/keepalived.conf.bak
+
+
+cat > /etc/keepalived/chk_nginx.sh << EOF
+#!/bin/bash
+[ \`ps -C nginx --no-header |wc -l\` -eq 0 ] && systemctl start nginx
+sleep 2
+[ \`ps -C nginx --no-header |wc -l\` -eq 0 ] && systemctl stop keepalived
+EOF
+
+chmod +x /etc/keepalived/chk_nginx.sh
+
+
+#主节点和备节点配置要有所区分
+if [ "$ip" = "$master_ip" ];then
+cat > /etc/keepalived/keepalived.conf << EOF
+! Configuration File for keepalived
+
+global_defs {
+   notification_email {
+     djshi2@iflytek.com
+   }
+   notification_email_from djshi2@iflytek.com
+   smtp_server mail.iflytek.com
+   smtp_connect_timeout 30
+   router_id master-node
+   vrrp_skip_check_adv_addr
+   #vrrp_strict                     
+   vrrp_garp_interval 0
+   vrrp_gna_interval 0
+}
+
+vrrp_script chk_http_port {
+    script "/etc/keepalived/chk_nginx.sh"
+    interval 2 
+    weight -5 
+    fall 2
+    rise 1
+}
+
+vrrp_instance VI_1 {
+    state MASTER  
+    interface $network                   
+    mcast_src_ip $ip
+    virtual_router_id 51  
+    priority 100           
+    advert_int 1         
+    authentication {                  
+        auth_type PASS
+        auth_pass 1111
+    }
+    virtual_ipaddress {
+        $vip
+    }
+    track_script {
+		chk_http_port           
+    }
+}
+EOF
+
+else
+
+cat > /etc/keepalived/keepalived.conf << EOF
+! Configuration File for keepalived
+
+global_defs {
+   notification_email {
+     djshi2@iflytek.com
+   }
+   notification_email_from djshi2@iflytek.com
+   smtp_server mail.iflytek.com
+   smtp_connect_timeout 30
+   router_id slave-node
+   vrrp_skip_check_adv_addr
+   #vrrp_strict                  
+   vrrp_garp_interval 0
+   vrrp_gna_interval 0
+}
+
+vrrp_script chk_http_port {
+    script "/etc/keepalived/chk_nginx.sh"
+    interval 2 
+    weight -5 
+    fall 2
+    rise 1
+}
+
+vrrp_instance VI_1 {
+    state BACKUP
+    interface $network
+    mcast_src_ip $ip
+    virtual_router_id 51
+    priority 90
+    advert_int 1
+    authentication {
+        auth_type PASS
+        auth_pass 1111
+    }
+    virtual_ipaddress {
+        $vip
+    }
+    track_script {
+		chk_http_port
+    }
+}
+EOF
+fi
+
+systemctl start keepalived && systemctl enable keepalived
+}
+
+finish(){
+cat << EOF
++---------------------------------------+
+|      keepalived installation          |
+|      configuration completed          |
++---------------------------------------+
+EOF
+}
+
+
+keepalived_install
+keepalived_config
+finish

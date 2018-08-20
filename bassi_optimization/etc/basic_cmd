@@ -1,0 +1,119 @@
+#!/bin/bash
+
+#Batch execution command
+#author by djshi2
+
+ip=$1
+hostname=$2
+ntpdate_ip=$3
+
+#检查操作系统
+checkos(){
+os=`cat /etc/redhat-release | grep -oP "(?<=release )[0-9][.][0-9]"`
+[ "$os" != "7.3" ] && echo "ERROR: The operating system is not centos7.3 on $ip" && exit 1
+}
+
+#创建磁盘分区
+setzone(){
+parted /dev/sda mklabel gpt yes && parted /dev/sda mkpart primary ext4 0 800GB ignore && parted /dev/sda p 
+if [ $? -eq 0 ];then
+mkfs.ext4 /dev/sda1 && tune2fs -c  -1 /dev/sda1 && mkdir -p /data && mount -t ext4 /dev/sda1 /data && echo "/dev/sdb1 /data ext4 defaults 0 0" >> /etc/fstab
+else
+echo "ERROR: partition failed on $ip"
+fi
+}
+
+#创建业务用户
+setuser(){
+id iflytek > /dev/null || useradd -m -d /home/iflytek -s /bin/bash -u 1888 iflytek
+if [ $? -eq 0 ];then
+echo 'iflytek:iflytek!123'|chpasswd
+else
+echo "ERROR: create user failed on $ip"
+fi
+}
+
+#修改文件打开数
+setlimits(){
+[ -f "/etc/security/limits.conf.bak" ] || cp /etc/security/limits.conf /etc/security/limits.conf.bak
+
+if grep "^*.*soft.*nofile" /etc/security/limits.conf > /dev/null ;then
+sed -i "/^*.*soft.*nofile/d" /etc/security/limits.conf
+sed -i "/^*.*hard.*nofile/d" /etc/security/limits.conf
+sed -i "/^*.*soft.*nproc/d" /etc/security/limits.conf
+sed -i "/^*.*hard.*nproc/d" /etc/security/limits.conf
+fi
+
+cat >> /etc/security/limits.conf << EOF
+*  soft  nofile  1024000
+*  hard  nofile  1024000
+*  soft  nproc   1024000
+*  hard  nproc   1024000
+EOF
+
+sed -i 's/4096/65535/' /etc/security/limits.d/20-nproc.conf
+}
+
+#关闭防火墙
+setfirewalld(){
+systemctl stop firewalld.service && systemctl disable firewalld.service
+systemctl status firewalld.service | grep -o "dead" > /dev/null || echo "ERROR: failed to close firewalld on $ip"
+}
+
+#关闭selinux
+setselinux(){
+sed -i 's/SELINUX=enforcing/SELINUX=disabled/' /etc/selinux/config
+setenforce 0
+}
+
+#主机名修改
+sethostname(){
+hostnamectl set-hostname $hostname
+[ "`hostname`" = "$hostname" ] || echo "ERROR: failed to set-hostname on $ip"
+}
+
+#修改时间时区
+setdate(){
+cp -pf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
+yum install -y ntp
+systemctl stop ntpd && systemctl disable ntpd
+echo "10 2 * * * /usr/sbin/ntpdate $ntpdate_ip" >> /var/spool/cron/iflytek
+chown iflytek:iflytek /var/spool/cron/iflytek
+systemctl restart crond
+}
+
+#修改yum源为阿里源
+setyum(){
+mkdir -p /etc/yum.repos.d/bak && mv /etc/yum.repos.d/*.repo /etc/yum.repos.d/bak/
+yum install -y wget
+wget -O /etc/yum.repos.d/CentOS-Base.repo http://mirrors.aliyun.com/repo/Centos-7.repo
+wget -O /etc/yum.repos.d/epel.repo http://mirrors.aliyun.com/repo/epel-7.repo
+yum clean all
+yum makecache
+}
+
+check(){
+checkos
+#setzone
+setuser
+setlimits
+setfirewalld
+setselinux
+sethostname
+setdate
+setyum
+}
+
+test(){
+id iflytek > /dev/null 2>&1 || echo "ERROR: create user failed on $ip"
+cat /etc/security/limits.conf | grep 1024000 > /dev/null 2>&1 || echo "ERROR: Failed to modify limits.conf on $ip"
+cat /etc/security/limits.d/20-nproc.conf | grep 65535 > /dev/null 2>&1 || echo "ERROR: Failed to modify 20-nproc.conf on $ip"
+systemctl status firewalld.service | grep -o "dead" > /dev/null || echo "ERROR: failed to close firewalld on $ip"
+cat /etc/selinux/config | grep "SELINUX=disabled" > /dev/null 2>&1 || echo "ERROR: Failed to modify SELinux on $ip"
+[ "`hostname`" = "$hostname" ] || echo "ERROR: failed to set-hostname on $ip"
+date | grep "CST" > /dev/null 2>&1 || echo "ERROR: Modification of time zone failed on $ip"
+cat /etc/yum.repos.d/CentOS-Base.repo | grep "aliyun" > /dev/null 2>&1 || echo "ERROE: Modification of Yum source failed on $ip"
+}
+
+check > /dev/null 2>&1
+test
